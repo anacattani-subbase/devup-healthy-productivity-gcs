@@ -1,0 +1,420 @@
+// ============================================================
+// DevUp: Produtividade com Saúde
+// Arquivo: devup_core.pseudo
+// Descrição: Pseudocódigo simulado dos módulos principais
+// Versão: 1.0.0
+// ============================================================
+
+
+// ============================================================
+// MÓDULO 1: AUTENTICAÇÃO E USUÁRIOS
+// ============================================================
+
+FUNÇÃO autenticarUsuario(email, senha):
+    usuario <- buscarUsuarioPorEmail(email)
+
+    SE usuario NÃO EXISTE:
+        RETORNAR ERRO "Credenciais inválidas"
+
+    SE verificarSenha(senha, usuario.senhaHash) É FALSO:
+        RETORNAR ERRO "Credenciais inválidas"
+
+    token <- gerarTokenJWT(usuario.id, usuario.perfil)
+    registrarLogin(usuario.id, dataHoraAtual())
+
+    RETORNAR { token, usuario }
+
+FIM FUNÇÃO
+
+
+FUNÇÃO criarUsuario(nome, email, senha, perfil):
+    // perfil pode ser: COLABORADOR ou GESTOR
+
+    SE emailJaCadastrado(email):
+        RETORNAR ERRO "E-mail já está em uso"
+
+    senhaHash <- criptografarSenha(senha)
+    novoUsuario <- {
+        id: gerarUUID(),
+        nome: nome,
+        email: email,
+        senhaHash: senhaHash,
+        perfil: perfil,
+        pontuacaoTotal: 0,
+        sequenciaAtual: 0,
+        dataCadastro: dataHoraAtual()
+    }
+
+    salvarNoBanco(novoUsuario)
+    enviarEmailBoasVindas(email, nome)
+
+    RETORNAR novoUsuario
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 2: REGISTRO E MONITORAMENTO DE HÁBITOS E TAREFAS
+// ============================================================
+
+FUNÇÃO criarHabito(usuarioId, dados):
+    // dados: { nome, categoria, frequencia, lembrete }
+    // categoria: SAUDE, PRODUTIVIDADE, ESTUDOS
+
+    habito <- {
+        id: gerarUUID(),
+        usuarioId: usuarioId,
+        nome: dados.nome,
+        categoria: dados.categoria,
+        frequencia: dados.frequencia,  // DIARIO, SEMANAL
+        lembrete: dados.lembrete,
+        dataCriacao: dataHoraAtual(),
+        ativo: VERDADEIRO
+    }
+
+    salvarNoBanco(habito)
+    SE dados.lembrete NÃO É NULO:
+        agendarNotificacao(usuarioId, habito.id, dados.lembrete)
+
+    RETORNAR habito
+
+FIM FUNÇÃO
+
+
+FUNÇÃO registrarCumprimento(usuarioId, habitoId):
+    habito <- buscarHabitoPorId(habitoId)
+
+    SE habito NÃO EXISTE OU habito.usuarioId != usuarioId:
+        RETORNAR ERRO "Hábito não encontrado"
+
+    cumprimentoHoje <- buscarCumprimentoHoje(usuarioId, habitoId)
+
+    SE cumprimentoHoje JÁ EXISTE:
+        RETORNAR ERRO "Hábito já registrado hoje"
+
+    registro <- {
+        id: gerarUUID(),
+        usuarioId: usuarioId,
+        habitoId: habitoId,
+        dataHora: dataHoraAtual()
+    }
+
+    salvarNoBanco(registro)
+    pontos <- calcularPontos(habito.categoria)
+    atualizarPontuacao(usuarioId, pontos)
+    atualizarSequencia(usuarioId)
+
+    RETORNAR { registro, pontosGanhos: pontos }
+
+FIM FUNÇÃO
+
+
+FUNÇÃO criarTarefa(usuarioId, dados):
+    // dados: { titulo, descricao, prazo, prioridade }
+    // prioridade: BAIXA, MEDIA, ALTA
+
+    tarefa <- {
+        id: gerarUUID(),
+        usuarioId: usuarioId,
+        titulo: dados.titulo,
+        descricao: dados.descricao,
+        prazo: dados.prazo,
+        prioridade: dados.prioridade,
+        status: "PENDENTE",   // PENDENTE, EM_ANDAMENTO, CONCLUIDA
+        dataCriacao: dataHoraAtual()
+    }
+
+    salvarNoBanco(tarefa)
+    RETORNAR tarefa
+
+FIM FUNÇÃO
+
+
+FUNÇÃO atualizarStatusTarefa(usuarioId, tarefaId, novoStatus):
+    tarefa <- buscarTarefaPorId(tarefaId)
+
+    SE tarefa NÃO EXISTE OU tarefa.usuarioId != usuarioId:
+        RETORNAR ERRO "Tarefa não encontrada"
+
+    tarefa.status <- novoStatus
+
+    SE novoStatus É "CONCLUIDA":
+        tarefa.dataConclusao <- dataHoraAtual()
+        pontos <- calcularPontosTarefa(tarefa.prioridade)
+        atualizarPontuacao(usuarioId, pontos)
+
+    salvarNoBanco(tarefa)
+    RETORNAR tarefa
+
+FIM FUNÇÃO
+
+
+FUNÇÃO buscarProgressoSemanal(usuarioId):
+    hoje <- dataAtual()
+    inicioDaSemana <- calcularInicioDaSemana(hoje)
+
+    habitos <- buscarHabitosPorUsuario(usuarioId)
+    tarefas <- buscarTarefasConcluidasNoPeriodo(usuarioId, inicioDaSemana, hoje)
+    cumprimentos <- buscarCumprimentosNoPeriodo(usuarioId, inicioDaSemana, hoje)
+
+    progresso <- {}
+    PARA CADA dia DE inicioDaSemana ATÉ hoje:
+        progresso[dia] <- {
+            habitosCumpridos: contarCumprimentosPorDia(cumprimentos, dia),
+            tarefasConcluidas: contarTarefasPorDia(tarefas, dia)
+        }
+
+    RETORNAR progresso
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 3: GAMIFICAÇÃO E SEQUÊNCIAS
+// ============================================================
+
+FUNÇÃO calcularPontos(categoria):
+    SE categoria É "SAUDE":
+        RETORNAR 15
+    SE categoria É "PRODUTIVIDADE":
+        RETORNAR 10
+    SE categoria É "ESTUDOS":
+        RETORNAR 12
+    RETORNAR 5
+
+FIM FUNÇÃO
+
+
+FUNÇÃO calcularPontosTarefa(prioridade):
+    SE prioridade É "ALTA":
+        RETORNAR 20
+    SE prioridade É "MEDIA":
+        RETORNAR 10
+    SE prioridade É "BAIXA":
+        RETORNAR 5
+    RETORNAR 5
+
+FIM FUNÇÃO
+
+
+FUNÇÃO atualizarSequencia(usuarioId):
+    usuario <- buscarUsuarioPorId(usuarioId)
+    ontem <- subtrairDias(dataAtual(), 1)
+
+    ultimoRegistro <- buscarUltimoCumprimento(usuarioId)
+
+    SE ultimoRegistro.data É ontem:
+        usuario.sequenciaAtual <- usuario.sequenciaAtual + 1
+    SENÃO SE ultimoRegistro.data NÃO É hoje:
+        usuario.sequenciaAtual <- 1   // reinicia sequência
+
+    SE usuario.sequenciaAtual > usuario.maiorSequencia:
+        usuario.maiorSequencia <- usuario.sequenciaAtual
+
+    salvarNoBanco(usuario)
+    verificarConquistas(usuarioId, usuario.sequenciaAtual)
+
+    RETORNAR usuario.sequenciaAtual
+
+FIM FUNÇÃO
+
+
+FUNÇÃO verificarConquistas(usuarioId, sequenciaAtual):
+    marcos <- [3, 7, 14, 30, 60, 100]
+
+    PARA CADA marco EM marcos:
+        SE sequenciaAtual É marco:
+            conquista <- {
+                id: gerarUUID(),
+                usuarioId: usuarioId,
+                tipo: "SEQUENCIA_" + marco + "_DIAS",
+                dataObtida: dataHoraAtual()
+            }
+            salvarNoBanco(conquista)
+            enviarNotificacao(usuarioId, "🏆 Nova conquista desbloqueada: " + marco + " dias seguidos!")
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 4: RANKINGS E COMPETIÇÃO
+// ============================================================
+
+FUNÇÃO buscarRanking(filtro):
+    // filtro: { tipo, empresaId, equipeId, categoria, limite }
+    // tipo: EMPRESA, EQUIPE
+    // categoria: GERAL, SAUDE, PRODUTIVIDADE, ESTUDOS
+
+    SE filtro.categoria É "GERAL":
+        usuarios <- buscarUsuariosPorEmpresa(filtro.empresaId)
+        usuarios <- ordenarPorPontuacaoTotal(usuarios)
+    SENÃO:
+        usuarios <- buscarUsuariosPorCategoria(filtro.empresaId, filtro.categoria)
+        usuarios <- ordenarPorPontuacaoCategoria(usuarios, filtro.categoria)
+
+    SE filtro.tipo É "EQUIPE":
+        usuarios <- filtrarPorEquipe(usuarios, filtro.equipeId)
+
+    ranking <- []
+    PARA CADA i DE 0 ATÉ MIN(filtro.limite, tamanho(usuarios)):
+        ranking[i] <- {
+            posicao: i + 1,
+            usuarioId: usuarios[i].id,
+            nome: usuarios[i].nome,
+            pontuacao: usuarios[i].pontuacaoTotal,
+            sequencia: usuarios[i].sequenciaAtual,
+            conquistas: contarConquistas(usuarios[i].id)
+        }
+
+    RETORNAR ranking
+
+FIM FUNÇÃO
+
+
+FUNÇÃO notificarMudancaDeposicao(usuarioId):
+    posicaoAnterior <- buscarPosicaoAnterior(usuarioId)
+    posicaoAtual <- buscarPosicaoAtual(usuarioId)
+
+    SE posicaoAtual < posicaoAnterior:   // posição menor = subiu no ranking
+        mensagem <- "🚀 Você subiu para a posição #" + posicaoAtual + " no ranking!"
+        enviarNotificacao(usuarioId, mensagem)
+        salvarHistoricoPosicao(usuarioId, posicaoAtual)
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 5: PAINEL DO GESTOR
+// ============================================================
+
+FUNÇÃO buscarDadosEquipe(gestorId, equipeId):
+    SE NÃO temPermissao(gestorId, "VER_EQUIPE", equipeId):
+        RETORNAR ERRO "Acesso negado"
+
+    colaboradores <- buscarColaboradoresDaEquipe(equipeId)
+
+    resumo <- {
+        totalColaboradores: tamanho(colaboradores),
+        mediaEngajamento: 0,
+        habitosMaisCumpridos: [],
+        colaboradoresDestaque: [],
+        taxaAdesaoSemanal: 0
+    }
+
+    totalEngajamento <- 0
+    PARA CADA colaborador EM colaboradores:
+        engajamento <- calcularEngajamento(colaborador.id)
+        totalEngajamento <- totalEngajamento + engajamento
+
+        SE engajamento >= 80:
+            adicionar(resumo.colaboradoresDestaque, colaborador)
+
+    resumo.mediaEngajamento <- totalEngajamento / tamanho(colaboradores)
+    resumo.habitosMaisCumpridos <- buscarHabitosMaisFrequentes(equipeId)
+    resumo.taxaAdesaoSemanal <- calcularTaxaAdesaoSemanal(equipeId)
+
+    RETORNAR resumo
+
+FIM FUNÇÃO
+
+
+FUNÇÃO calcularEngajamento(usuarioId):
+    // Engajamento = % de dias com pelo menos 1 hábito cumprido nos últimos 30 dias
+
+    diasComCumprimento <- contarDiasComCumprimento(usuarioId, 30)
+    engajamento <- (diasComCumprimento / 30) * 100
+
+    RETORNAR arredondar(engajamento, 2)
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 6: TERMÔMETRO DE HUMOR E SATISFAÇÃO
+// ============================================================
+
+FUNÇÃO registrarHumor(usuarioId, dados):
+    // dados: { nivel, nota, comentario }
+    // nivel: MUITO_MAL, MAL, NEUTRO, BEM, MUITO_BEM
+
+    registro <- {
+        id: gerarUUID(),
+        usuarioId: usuarioId,
+        nivel: dados.nivel,
+        nota: dados.nota,           // 1 a 5
+        comentario: dados.comentario,
+        data: dataAtual(),
+        hora: horaAtual()
+    }
+
+    salvarNoBanco(registro)
+
+    SE dados.nota <= 2:
+        alertarGestor(usuarioId, "Colaborador registrou humor baixo hoje.")
+
+    RETORNAR registro
+
+FIM FUNÇÃO
+
+
+FUNÇÃO buscarTendenciaHumor(usuarioId, periodo):
+    registros <- buscarRegistrosDeHumor(usuarioId, periodo)
+
+    mediaPorDia <- {}
+    PARA CADA registro EM registros:
+        mediaPorDia[registro.data] <- calcularMedia(mediaPorDia[registro.data], registro.nota)
+
+    RETORNAR mediaPorDia
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 7: RECOMPENSAS RELÂMPAGO
+// ============================================================
+
+FUNÇÃO gerarRecompensaRelampago(empresaId):
+    tarefa <- {
+        id: gerarUUID(),
+        empresaId: empresaId,
+        titulo: sortearTarefaSurpresa(),
+        bonus: sortearBonus(),           // pontos extras
+        expiracao: adicionarHoras(dataHoraAtual(), 2),   // válida por 2h
+        ativa: VERDADEIRO
+    }
+
+    salvarNoBanco(tarefa)
+    notificarTodosColaboradores(empresaId, "⚡ Recompensa Relâmpago disponível! Corra!")
+
+    RETORNAR tarefa
+
+FIM FUNÇÃO
+
+
+FUNÇÃO resgatarRecompensa(usuarioId, recompensaId):
+    recompensa <- buscarRecompensaPorId(recompensaId)
+
+    SE recompensa NÃO EXISTE OU NÃO recompensa.ativa:
+        RETORNAR ERRO "Recompensa indisponível"
+
+    SE dataHoraAtual() > recompensa.expiracao:
+        recompensa.ativa <- FALSO
+        salvarNoBanco(recompensa)
+        RETORNAR ERRO "Recompensa expirada"
+
+    SE usuarioJaResgatou(usuarioId, recompensaId):
+        RETORNAR ERRO "Você já resgatou esta recompensa"
+
+    resgate <- {
+        id: gerarUUID(),
+        usuarioId: usuarioId,
+        recompensaId: recompensaId,
+        dataHora: dataHoraAtual()
+    }
+
+    salvarNoBanco(resgate)
+    atualizarPontuacao(usuarioId, recompensa.bonus)
+
+    RETORNAR { mensagem: "Recompensa resgatada com sucesso!", pontosGanhos: recompensa.bonus }
+
+FIM FUNÇÃO
