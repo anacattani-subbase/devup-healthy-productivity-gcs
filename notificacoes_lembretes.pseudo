@@ -1,0 +1,392 @@
+// ============================================================
+// DevUp: Produtividade com Saúde
+// Arquivo: notificacoes_lembretes.pseudo
+// Descrição: Pseudocódigo do módulo de notificações e lembretes
+// Versão: 1.0.0
+// ============================================================
+
+
+// ============================================================
+// MÓDULO 1: CONFIGURAÇÃO DE LEMBRETES DE HÁBITOS
+// ============================================================
+
+FUNÇÃO configurarLembreteHabito(usuarioId, habitoId, dados):
+    // dados: { horario, diasDaSemana, ativo }
+    // diasDaSemana: lista ex. ["SEG", "TER", "QUA", "QUI", "SEX"]
+    // horario: "HH:MM" ex. "08:30"
+
+    habito <- buscarHabitoPorId(habitoId)
+
+    SE habito NÃO EXISTE OU habito.usuarioId != usuarioId:
+        RETORNAR ERRO "Hábito não encontrado"
+
+    lembreteExistente <- buscarLembretePorHabito(habitoId)
+
+    SE lembreteExistente EXISTE:
+        lembreteExistente.horario      <- dados.horario
+        lembreteExistente.diasDaSemana <- dados.diasDaSemana
+        lembreteExistente.ativo        <- dados.ativo
+        salvarNoBanco(lembreteExistente)
+        cancelarAgendamentoAnterior(lembreteExistente.id)
+        lembrete <- lembreteExistente
+    SENÃO:
+        lembrete <- {
+            id:            gerarUUID(),
+            usuarioId:     usuarioId,
+            habitoId:      habitoId,
+            horario:       dados.horario,
+            diasDaSemana:  dados.diasDaSemana,
+            ativo:         dados.ativo,
+            dataCriacao:   dataHoraAtual()
+        }
+        salvarNoBanco(lembrete)
+
+    SE lembrete.ativo:
+        agendarLembrete(lembrete)
+
+    RETORNAR lembrete
+
+FIM FUNÇÃO
+
+
+FUNÇÃO agendarLembrete(lembrete):
+    PARA CADA dia EM lembrete.diasDaSemana:
+        proximaOcorrencia <- calcularProximaOcorrencia(dia, lembrete.horario)
+
+        job <- {
+            lembreteId:  lembrete.id,
+            usuarioId:   lembrete.usuarioId,
+            habitoId:    lembrete.habitoId,
+            dispararEm:  proximaOcorrencia,
+            recorrente:  VERDADEIRO
+        }
+
+        adicionarNaFilaDeJobs(job)
+
+    RETORNAR VERDADEIRO
+
+FIM FUNÇÃO
+
+
+FUNÇÃO calcularProximaOcorrencia(diaDaSemana, horario):
+    hoje         <- dataAtual()
+    diaSemanaHoje <- diaDaSemanaAtual()  // ex. "TER"
+    horaAtual    <- horaAtual()
+
+    diasSemana <- ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]
+    indiceAlvo <- posicaoDe(diasSemana, diaDaSemana)
+    indiceHoje <- posicaoDe(diasSemana, diaSemanaHoje)
+
+    diasAteOAlvo <- (indiceAlvo - indiceHoje + 7) % 7
+
+    SE diasAteOAlvo É 0 E horario <= horaAtual:
+        diasAteOAlvo <- 7   // já passou hoje, agenda para semana que vem
+
+    RETORNAR adicionarDias(hoje, diasAteOAlvo) + horario
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 2: AGENDAMENTO DE PAUSAS ATIVAS
+// ============================================================
+
+FUNÇÃO configurarPausasAtivas(usuarioId, dados):
+    // dados: { intervaloMinutos, inicioPeriodo, fimPeriodo, diasDaSemana }
+    // ex: intervalo 90min, das 08:00 às 18:00, dias úteis
+
+    SE dados.intervaloMinutos < 30:
+        RETORNAR ERRO "Intervalo mínimo entre pausas é de 30 minutos"
+
+    SE dados.inicioPeriodo >= dados.fimPeriodo:
+        RETORNAR ERRO "Período inválido"
+
+    configExistente <- buscarConfigPausaPorUsuario(usuarioId)
+
+    SE configExistente EXISTE:
+        configExistente.intervaloMinutos <- dados.intervaloMinutos
+        configExistente.inicioPeriodo    <- dados.inicioPeriodo
+        configExistente.fimPeriodo       <- dados.fimPeriodo
+        configExistente.diasDaSemana     <- dados.diasDaSemana
+        salvarNoBanco(configExistente)
+        cancelarPausasAgendadas(usuarioId)
+        config <- configExistente
+    SENÃO:
+        config <- {
+            id:                gerarUUID(),
+            usuarioId:         usuarioId,
+            intervaloMinutos:  dados.intervaloMinutos,
+            inicioPeriodo:     dados.inicioPeriodo,
+            fimPeriodo:        dados.fimPeriodo,
+            diasDaSemana:      dados.diasDaSemana,
+            ativo:             VERDADEIRO
+        }
+        salvarNoBanco(config)
+
+    agendarPausasDoDia(config)
+
+    RETORNAR config
+
+FIM FUNÇÃO
+
+
+FUNÇÃO agendarPausasDoDia(config):
+    diaSemanaHoje <- diaDaSemanaAtual()
+
+    SE diaSemanaHoje NÃO ESTÁ EM config.diasDaSemana:
+        RETORNAR   // não é dia de trabalho configurado
+
+    horaAtual    <- horaAtual()
+    proximaHora  <- config.inicioPeriodo
+
+    SE horaAtual > config.inicioPeriodo:
+        // já passou do início, calcula próximo intervalo a partir de agora
+        minutosDesdeInicio <- diferencaEmMinutos(config.inicioPeriodo, horaAtual)
+        intervalosPassados <- arredondarParaCima(minutosDesdeInicio / config.intervaloMinutos)
+        proximaHora <- adicionarMinutos(config.inicioPeriodo, intervalosPassados * config.intervaloMinutos)
+
+    ENQUANTO proximaHora < config.fimPeriodo:
+        job <- {
+            tipo:       "PAUSA_ATIVA",
+            usuarioId:  config.usuarioId,
+            dispararEm: proximaHora,
+            recorrente: FALSO
+        }
+        adicionarNaFilaDeJobs(job)
+        proximaHora <- adicionarMinutos(proximaHora, config.intervaloMinutos)
+
+    RETORNAR VERDADEIRO
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 3: PROCESSADOR DA FILA DE JOBS
+// ============================================================
+
+FUNÇÃO processarFilaDeJobs():
+    // Executado pelo scheduler a cada minuto
+
+    agora <- dataHoraAtual()
+    jobs  <- buscarJobsPendentes(ate: agora)
+
+    PARA CADA job EM jobs:
+        Tente:
+            SE job.tipo É "LEMBRETE_HABITO":
+                processarLembreteHabito(job)
+
+            SE job.tipo É "PAUSA_ATIVA":
+                processarPausaAtiva(job)
+
+            SE job.tipo É "RESUMO_DIARIO":
+                processarResumoDiario(job)
+
+            marcarJobComoConcluido(job.id)
+
+            SE job.recorrente:
+                reagendarJob(job)
+
+        Capture erro:
+            registrarErroDeJob(job.id, erro)
+            SE job.tentativas < 3:
+                reagendarJobComAtraso(job, minutos: 5)
+            SENÃO:
+                marcarJobComoFalho(job.id)
+
+FIM FUNÇÃO
+
+
+FUNÇÃO processarLembreteHabito(job):
+    usuario <- buscarUsuarioPorId(job.usuarioId)
+    habito  <- buscarHabitoPorId(job.habitoId)
+
+    SE usuario NÃO EXISTE OU habito NÃO EXISTE:
+        RETORNAR
+
+    jaCompletouHoje <- buscarCumprimentoHoje(job.usuarioId, job.habitoId)
+
+    SE jaCompletouHoje:
+        RETORNAR   // hábito já feito, não notifica
+
+    mensagem <- montarMensagemHabito(habito, usuario.sequenciaAtual)
+
+    enviarNotificacaoPush(usuario.id, {
+        titulo:  "Hora do seu hábito! ✅",
+        corpo:   mensagem,
+        icone:   "habito",
+        acao:    "ABRIR_HABITO",
+        dadosExtras: { habitoId: habito.id }
+    })
+
+    registrarNotificacaoEnviada(usuario.id, "LEMBRETE_HABITO", job.habitoId)
+
+FIM FUNÇÃO
+
+
+FUNÇÃO montarMensagemHabito(habito, sequenciaAtual):
+    SE sequenciaAtual >= 7:
+        RETORNAR "Você está em uma sequência de " + sequenciaAtual + " dias! Não perca: " + habito.nome
+    SE sequenciaAtual >= 3:
+        RETORNAR "Boa sequência! Bora manter: " + habito.nome
+    RETORNAR "Lembrete: " + habito.nome + " ainda não foi registrado hoje."
+
+FIM FUNÇÃO
+
+
+FUNÇÃO processarPausaAtiva(job):
+    usuario <- buscarUsuarioPorId(job.usuarioId)
+
+    SE usuario NÃO EXISTE:
+        RETORNAR
+
+    sugestoes <- [
+        "Levante e caminhe por 5 minutos 🚶",
+        "Faça alongamentos de pescoço e ombros 🧘",
+        "Beba um copo d'água agora 💧",
+        "Feche os olhos por 1 minuto e respire fundo 😮‍💨",
+        "Faça 10 agachamentos na cadeira 💪"
+    ]
+
+    sugestaoEscolhida <- sortear(sugestoes)
+
+    enviarNotificacaoPush(usuario.id, {
+        titulo:  "Hora da pausa ativa! 🏃",
+        corpo:   sugestaoEscolhida,
+        icone:   "pausa",
+        acao:    "REGISTRAR_PAUSA",
+        dadosExtras: { pontos: 15 }
+    })
+
+    registrarNotificacaoEnviada(usuario.id, "PAUSA_ATIVA", NULO)
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 4: RESUMO DIÁRIO
+// ============================================================
+
+FUNÇÃO agendarResumoDiario(usuarioId, horarioResumo):
+    // horarioResumo: ex. "18:00" — enviado no fim do dia
+
+    jobExistente <- buscarJobResumoPorUsuario(usuarioId)
+
+    SE jobExistente EXISTE:
+        cancelarJob(jobExistente.id)
+
+    job <- {
+        tipo:       "RESUMO_DIARIO",
+        usuarioId:  usuarioId,
+        dispararEm: calcularProximaOcorrenciaDiaria(horarioResumo),
+        recorrente: VERDADEIRO
+    }
+
+    adicionarNaFilaDeJobs(job)
+    RETORNAR VERDADEIRO
+
+FIM FUNÇÃO
+
+
+FUNÇÃO processarResumoDiario(job):
+    usuarioId <- job.usuarioId
+    hoje      <- dataAtual()
+
+    habitos           <- buscarHabitosPorUsuario(usuarioId)
+    cumprimentosHoje  <- buscarCumprimentosNoPeriodo(usuarioId, hoje, hoje)
+    tarefasConcluidas <- buscarTarefasConcluidasNoPeriodo(usuarioId, hoje, hoje)
+    pontosDoDia       <- calcularPontosDoDia(usuarioId, hoje)
+    posicaoRanking    <- buscarPosicaoAtual(usuarioId)
+
+    totalHabitos     <- tamanho(habitos)
+    habitosCumpridos <- tamanho(cumprimentosHoje)
+    percentual       <- (habitosCumpridos / totalHabitos) * 100
+
+    SE percentual >= 80:
+        emoji    <- "🏆"
+        mensagem <- "Dia excelente! Você completou " + habitosCumpridos + "/" + totalHabitos + " hábitos."
+    SE percentual >= 50:
+        emoji    <- "👍"
+        mensagem <- "Bom dia! Completou " + habitosCumpridos + "/" + totalHabitos + " hábitos. Amanhã vai mais!"
+    SENÃO:
+        emoji    <- "💪"
+        mensagem <- "Dia difícil, mas você apareceu! " + habitosCumpridos + "/" + totalHabitos + " hábitos feitos."
+
+    enviarNotificacaoPush(usuarioId, {
+        titulo:  emoji + " Seu resumo de hoje",
+        corpo:   mensagem + " +" + pontosDoDia + " pts | Ranking: #" + posicaoRanking,
+        icone:   "resumo",
+        acao:    "ABRIR_DASHBOARD"
+    })
+
+    registrarNotificacaoEnviada(usuarioId, "RESUMO_DIARIO", NULO)
+
+FIM FUNÇÃO
+
+
+// ============================================================
+// MÓDULO 5: PREFERÊNCIAS DE NOTIFICAÇÃO
+// ============================================================
+
+FUNÇÃO atualizarPreferenciasNotificacao(usuarioId, dados):
+    // dados: { lembretes, pausasAtivas, resumoDiario, recompensasRelampago, rankingMudanca }
+    // cada campo é VERDADEIRO ou FALSO
+
+    prefs <- buscarPreferenciasPorUsuario(usuarioId)
+
+    SE prefs NÃO EXISTE:
+        prefs <- { id: gerarUUID(), usuarioId: usuarioId }
+
+    prefs.lembretes            <- dados.lembretes
+    prefs.pausasAtivas         <- dados.pausasAtivas
+    prefs.resumoDiario         <- dados.resumoDiario
+    prefs.recompensasRelampago <- dados.recompensasRelampago
+    prefs.rankingMudanca       <- dados.rankingMudanca
+
+    salvarNoBanco(prefs)
+
+    SE NÃO dados.pausasAtivas:
+        cancelarPausasAgendadas(usuarioId)
+
+    SE NÃO dados.resumoDiario:
+        cancelarResumoDiario(usuarioId)
+
+    RETORNAR prefs
+
+FIM FUNÇÃO
+
+
+FUNÇÃO enviarNotificacaoPush(usuarioId, payload):
+    prefs <- buscarPreferenciasPorUsuario(usuarioId)
+
+    SE prefs NÃO EXISTE:
+        RETORNAR   // sem preferências configuradas, não envia
+
+    tipoPermitido <- verificarPermissaoPorTipo(prefs, payload.acao)
+
+    SE NÃO tipoPermitido:
+        RETORNAR   // usuário desativou este tipo de notificação
+
+    tokens <- buscarTokensDispositivo(usuarioId)  // pode ter celular + desktop
+
+    SE tamanho(tokens) É 0:
+        RETORNAR
+
+    PARA CADA token EM tokens:
+        Tente:
+            enviarViaPushService(token, payload)
+        Capture erro:
+            SE erro É "TOKEN_INVALIDO":
+                removerToken(token)
+
+FIM FUNÇÃO
+
+
+FUNÇÃO verificarPermissaoPorTipo(prefs, acao):
+    SE acao É "ABRIR_HABITO"    E prefs.lembretes:            RETORNAR VERDADEIRO
+    SE acao É "REGISTRAR_PAUSA" E prefs.pausasAtivas:         RETORNAR VERDADEIRO
+    SE acao É "ABRIR_DASHBOARD" E prefs.resumoDiario:         RETORNAR VERDADEIRO
+    SE acao É "ABRIR_RECOMPENSA" E prefs.recompensasRelampago: RETORNAR VERDADEIRO
+    SE acao É "ABRIR_RANKING"   E prefs.rankingMudanca:       RETORNAR VERDADEIRO
+    RETORNAR FALSO
+
+FIM FUNÇÃO
